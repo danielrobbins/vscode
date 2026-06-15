@@ -1590,6 +1590,7 @@ export class ChatWidget extends Disposable implements IChatWidget {
 				editorOptions: this.editorOptions,
 				location: this.location,
 				getCurrentLanguageModelId: () => this.input.currentLanguageModel,
+				getModelConfiguration: modelId => this.input.getModelConfiguration(modelId),
 				getCurrentModeInfo: () => this.input.currentModeInfo,
 			}
 		));

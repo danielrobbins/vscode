@@ -8,6 +8,7 @@ import { IMouseWheelEvent } from '../../../../../base/browser/mouseEvent.js';
 import { Button } from '../../../../../base/browser/ui/button/button.js';
 import { ITreeContextMenuEvent, ITreeElement, ITreeFilter } from '../../../../../base/browser/ui/tree/tree.js';
 import { Codicon } from '../../../../../base/common/codicons.js';
+import { IStringDictionary } from '../../../../../base/common/collections.js';
 import { Emitter, Event } from '../../../../../base/common/event.js';
 import { FuzzyScore } from '../../../../../base/common/filters.js';
 import { Disposable, toDisposable } from '../../../../../base/common/lifecycle.js';
@@ -108,6 +109,11 @@ export interface IChatListWidgetOptions {
 	readonly getCurrentLanguageModelId?: () => string | undefined;
 
 	/**
+	 * Callback to get current model configuration (for rerun requests).
+	 */
+	readonly getModelConfiguration?: (modelId: string) => IStringDictionary<unknown> | undefined;
+
+	/**
 	 * Callback to get current mode info (for rerun requests).
 	 */
 	readonly getCurrentModeInfo?: () => IChatRequestModeInfo | undefined;
@@ -193,6 +199,7 @@ export class ChatListWidget extends Disposable {
 
 	private readonly _location: ChatAgentLocation | undefined;
 	private readonly _getCurrentLanguageModelId: (() => string | undefined) | undefined;
+	private readonly _getModelConfiguration: ((modelId: string) => IStringDictionary<unknown> | undefined) | undefined;
 	private readonly _getCurrentModeInfo: (() => IChatRequestModeInfo | undefined) | undefined;
 	private readonly _renderStyle: 'compact' | 'minimal' | undefined;
 
@@ -258,6 +265,7 @@ export class ChatListWidget extends Disposable {
 		this._viewModel = options.viewModel;
 		this._location = options.location;
 		this._getCurrentLanguageModelId = options.getCurrentLanguageModelId;
+		this._getModelConfiguration = options.getModelConfiguration;
 		this._getCurrentModeInfo = options.getCurrentModeInfo;
 		this._lastItemIdContextKey = ChatContextKeys.lastItemId.bindTo(this.contextKeyService);
 		this._container = container;
@@ -341,11 +349,13 @@ export class ChatListWidget extends Disposable {
 		this._register(this._renderer.onDidClickRerunWithAgentOrCommandDetection(e => {
 			const request = this.chatService.getSession(e.sessionResource)?.getRequests().find(candidate => candidate.id === e.requestId);
 			if (request) {
+				const modelId = this._getCurrentLanguageModelId?.();
 				const sendOptions: IChatSendRequestOptions = {
 					noCommandDetection: true,
 					attempt: request.attempt + 1,
 					location: this._location,
-					userSelectedModelId: this._getCurrentLanguageModelId?.(),
+					userSelectedModelId: modelId,
+					userSelectedModelConfiguration: modelId ? this._getModelConfiguration?.(modelId) : undefined,
 					modeInfo: this._getCurrentModeInfo?.(),
 				};
 				this.chatAccessibilityService.acceptRequest(e.sessionResource);
