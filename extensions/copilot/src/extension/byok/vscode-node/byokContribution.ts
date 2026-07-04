@@ -14,6 +14,7 @@ import { IExtensionContribution } from '../../common/contributions';
 import { AbstractLanguageModelChatProvider } from './abstractLanguageModelChatProvider';
 import { AnthropicLMProvider } from './anthropicProvider';
 import { AzureBYOKModelProvider } from './azureProvider';
+import { resolveClientBYOKPolicyEvaluation } from './byokPolicy';
 import { BYOKStorageService, IBYOKStorageService } from './byokStorageService';
 import { CustomEndpointBYOKModelProvider } from './customEndpointProvider';
 import { CustomOAIBYOKModelProvider } from './customOAIProvider';
@@ -30,19 +31,21 @@ export class BYOKContrib extends Disposable implements IExtensionContribution {
 	private readonly _providerRegistrations = this._register(new DisposableStore());
 	private _providersRegistered = false;
 	private _knownModelsRefreshed = false;
+	private _policyApplyGeneration = 0;
 	private _knownModelsRefreshTargets: ReadonlyArray<readonly [string, AbstractLanguageModelChatProvider]> = [];
 
 	constructor(
 		@IFetcherService private readonly _fetcherService: IFetcherService,
 		@ILogService private readonly _logService: ILogService,
-		@IVSCodeExtensionContext extensionContext: IVSCodeExtensionContext,
+		@IVSCodeExtensionContext private readonly _extensionContext: IVSCodeExtensionContext,
 		@IAuthenticationService private readonly _authService: IAuthenticationService,
 		@IInstantiationService private readonly _instantiationService: IInstantiationService,
 	) {
 		super();
-		this._byokStorageService = new BYOKStorageService(extensionContext);
-		this._applyPolicy();
-		this._register(this._authService.onDidAuthenticationChange(() => this._applyPolicy()));
+		this._byokStorageService = new BYOKStorageService(this._extensionContext);
+		void this._applyPolicy();
+		this._register(this._authService.onDidAuthenticationChange(() => void this._applyPolicy()));
+		this._register(this._authService.onDidCopilotTokenChange(() => void this._applyPolicy()));
 	}
 
 	private _buildProviders(): void {
@@ -71,8 +74,13 @@ export class BYOKContrib extends Disposable implements IExtensionContribution {
 		];
 	}
 
-	private _applyPolicy(): void {
-		const allowed = isClientBYOKAllowed(!!this._authService.anyGitHubSession, this._authService.copilotToken);
+	private async _applyPolicy(): Promise<void> {
+		const generation = ++this._policyApplyGeneration;
+		const evaluation = await resolveClientBYOKPolicyEvaluation(this._authService, this._extensionContext);
+		if (generation !== this._policyApplyGeneration || this._store.isDisposed) {
+			return;
+		}
+		const allowed = isClientBYOKAllowed(evaluation);
 		if (allowed && !this._providersRegistered) {
 			if (this._providers.size === 0) {
 				this._buildProviders();
