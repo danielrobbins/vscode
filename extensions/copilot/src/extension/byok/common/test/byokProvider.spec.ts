@@ -101,8 +101,8 @@ describe('isClientBYOKAllowed', () => {
 		expect(isClientBYOKAllowed(false, undefined)).toBe(true);
 	});
 
-	it('denies BYOK when signed-in but the Copilot token is unavailable (e.g. EnterpriseManagedError)', () => {
-		expect(isClientBYOKAllowed(true, undefined)).toBe(false);
+	it('allows BYOK when signed-in but no Copilot token is available', () => {
+		expect(isClientBYOKAllowed(true, undefined)).toBe(true);
 	});
 
 	it('allows BYOK for internal users', () => {
