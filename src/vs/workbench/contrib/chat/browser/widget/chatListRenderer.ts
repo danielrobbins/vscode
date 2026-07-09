@@ -44,6 +44,7 @@ import { isDark } from '../../../../../platform/theme/common/theme.js';
 import { IThemeService } from '../../../../../platform/theme/common/themeService.js';
 import { AccessibilitySignal, IAccessibilitySignalService } from '../../../../../platform/accessibilitySignal/browser/accessibilitySignalService.js';
 import { parseRemoteAgentHostSessionTypeAuthority } from '../../../../../platform/agentHost/common/agentHostSessionType.js';
+import { isCreateChatTool, isCreateSessionTool } from '../../../../../platform/agentHost/common/openSessionLink.js';
 import { IChatEntitlementService } from '../../../../services/chat/common/chatEntitlementService.js';
 import { CodiconActionViewItem } from '../../../notebook/browser/view/cellParts/cellActionView.js';
 import { annotateSpecialMarkdownContent, extractSubAgentInvocationIdFromText, hasCodeblockUriTag, hasEditCodeblockUriTag } from '../../common/widget/annotations.js';
@@ -58,7 +59,7 @@ import { ChatQuestionCarouselData } from '../../common/model/chatProgressTypes/c
 import { localChatSessionType, SessionType } from '../../common/chatSessionsService.js';
 import { getChatSessionType } from '../../common/model/chatUri.js';
 import { getExplicitFileOrImageAttachmentSummary, IChatRequestVariableEntry, isExplicitFileOrImageVariableEntry, isPasteVariableEntry } from '../../common/attachments/chatVariableEntries.js';
-import { getStickyScrollTargetItem, IChatChangesSummaryPart, IChatCodeCitations, IChatErrorDetailsPart, IChatReferences, IChatRendererContent, IChatRequestViewModel, IChatResponseViewModel, IChatViewModel, IChatWorkingProgress, isRequestVM, isResponseVM, IChatPendingDividerViewModel, isPendingDividerVM } from '../../common/model/chatViewModel.js';
+import { getStickyScrollTargetItem, IChatChangesSummaryPart, IChatCodeCitations, IChatErrorDetailsPart, IChatReferences, IChatRendererContent, IChatRequestViewModel, IChatResponseViewModel, IChatViewModel, IChatWorkingProgress, isRequestVM, isResponseVM, IChatPendingDividerViewModel, isPendingDividerVM, IChatTurnPillsPart } from '../../common/model/chatViewModel.js';
 import { getNWords } from '../../common/model/chatWordCounter.js';
 import { ChatAgentLocation, ChatConfiguration, ChatModeKind, CollapsedToolsDisplayMode, ThinkingDisplayMode } from '../../common/constants.js';
 import { ClickAnimation } from '../../../../../base/browser/ui/animations/animations.js';
@@ -74,6 +75,8 @@ import { ChatAnonymousRateLimitedPart } from './chatContentParts/chatAnonymousRa
 import { ChatAttachmentsContentPart } from './chatContentParts/chatAttachmentsContentPart.js';
 import { ChatAutoModeResolutionContentPart } from './chatContentParts/chatAutoModeResolutionContentPart.js';
 import { ChatCheckpointFileChangesSummaryContentPart } from './chatContentParts/chatChangesSummaryPart.js';
+import { ChatTurnPillsContentPart } from './chatContentParts/chatTurnPillsPart.js';
+import { IChatTurnStatusPillsConfig } from './chatTurnPills.js';
 import { ChatCodeCitationContentPart } from './chatContentParts/chatCodeCitationContentPart.js';
 import { ChatCommandButtonContentPart } from './chatContentParts/chatCommandContentPart.js';
 import { ChatConfirmationContentPart } from './chatContentParts/chatConfirmationContentPart.js';
@@ -995,9 +998,17 @@ export class ChatListItemRenderer extends Disposable implements ITreeRenderer<Ch
 		const rowRoot = templateData.rowContainer.parentElement?.parentElement?.parentElement;
 		rowRoot?.classList.toggle('request', isRequestVM(element));
 		rowRoot?.classList.toggle('response', isResponseVM(element));
-		const isMostRecentChatTreeItem = getStickyScrollTargetItem(this.viewModel?.getItems() ?? []) === element;
-		templateData.rowContainer.classList.toggle(mostRecentResponseClassName, isMostRecentChatTreeItem);
+		// `.chat-most-recent-response` marks the actual last row. The reserved-space filler
+		// (`--chat-current-response-min-height`) is only applied to response rows via CSS, so
+		// when a queued/steering request row is last it gets no filler and the pending rows
+		// simply hug the streaming response above them.
+		templateData.rowContainer.classList.toggle(mostRecentResponseClassName, index === this.delegate.getListLength() - 1);
 		templateData.rowContainer.classList.toggle('confirmation-message', isRequestVM(element) && !!element.confirmation);
+
+		// The streaming/progressive-rendering target is the last non-pending item, so the active
+		// response keeps rendering (and the view keeps following it) even when queued or steering
+		// rows are shown below it.
+		const isStickyScrollTargetItem = getStickyScrollTargetItem(this.viewModel?.getItems() ?? []) === element;
 
 		// TODO: @justschen decide if we want to hide the header for requests or not
 		const shouldShowHeader = (isResponseVM(element) && !this.rendererOptions.noHeader) && !isSystemInitiatedRequest;
@@ -1008,12 +1019,12 @@ export class ChatListItemRenderer extends Disposable implements ITreeRenderer<Ch
 		}
 
 		// Do a progressive render if
-		// - This the last response in the list
+		// - This is the last non-pending response in the list
 		// - And it has some content
 		// - And the response is not complete
 		//   - Or, we previously started a progressive rendering of this element (if the element is complete, we will finish progressive rendering with a very fast rate)
 		const incrementalRendering = this.configService.getValue<boolean>(ChatConfiguration.IncrementalRendering);
-		if (isResponseVM(element) && isMostRecentChatTreeItem && (!element.isComplete || element.renderData)) {
+		if (isResponseVM(element) && isStickyScrollTargetItem && (!element.isComplete || element.renderData)) {
 			this.traceLayout('renderElement', `start progressive render, index=${index}`);
 
 			if (incrementalRendering && !element.renderData) {
@@ -1180,6 +1191,11 @@ export class ChatListItemRenderer extends Disposable implements ITreeRenderer<Ch
 		const fileChangesSummaryPart = this.getChatFileChangesSummaryPart(element);
 		if (fileChangesSummaryPart) {
 			content.push(fileChangesSummaryPart);
+		}
+
+		const turnPillsPart = this.getChatTurnPillsPart(element);
+		if (turnPillsPart) {
+			content.push(turnPillsPart);
 		}
 
 		const workingProgress = this.shouldShowWorkingProgress(element, content, false, templateData);
@@ -1501,6 +1517,25 @@ export class ChatListItemRenderer extends Disposable implements ITreeRenderer<Ch
 		}
 
 		return { kind: 'changesSummary', requestId: element.requestId, sessionResource: element.sessionResource };
+	}
+
+	private getChatTurnPillsPart(element: IChatResponseViewModel): IChatTurnPillsPart | undefined {
+		// The turn status pills mirror the floating pills shown above the input
+		// while the turn streams. They are opt-in per pill, only apply to agent
+		// host sessions (which supply authoritative per-turn changes via
+		// IChatResponseFileChangesService) and, like the pills above the input,
+		// appear once the turn is complete.
+		if (!element.isComplete) {
+			return undefined;
+		}
+		const pillsConfig = this.configService.getValue<IChatTurnStatusPillsConfig | undefined>(ChatConfiguration.TurnStatusPills);
+		if (!pillsConfig?.changes && !pillsConfig?.preview) {
+			return undefined;
+		}
+		if (!isAgentHostTarget(getChatSessionType(element.sessionResource))) {
+			return undefined;
+		}
+		return { kind: 'turnPills', requestId: element.requestId, sessionResource: element.sessionResource };
 	}
 
 	private renderChatRequest(element: IChatRequestViewModel, index: number, templateData: IChatListItemTemplate) {
@@ -2029,6 +2064,11 @@ export class ChatListItemRenderer extends Disposable implements ITreeRenderer<Ch
 			partsToRender.push(fileChangesSummaryPart);
 		}
 
+		const turnPillsPart = this.getChatTurnPillsPart(element);
+		if (turnPillsPart) {
+			partsToRender.push(turnPillsPart);
+		}
+
 		return { content: partsToRender, moreContentAvailable };
 	}
 
@@ -2149,6 +2189,14 @@ export class ChatListItemRenderer extends Disposable implements ITreeRenderer<Ch
 
 		// Don't pin subagent tools to thinking parts - they have their own grouping
 		if ((part.kind === 'toolInvocation' || part.kind === 'toolInvocationSerialized') && isSubagentToolInvocation(part)) {
+			return false;
+		}
+
+		// Don't pin session-created tools (create_session / create_chat) — their
+		// "Open Session" button must stay visible, not hidden inside a collapsed
+		// thinking group. Keyed on toolId so this holds while the tool streams too
+		// (before `toolSpecificData` is set on completion).
+		if ((part.kind === 'toolInvocation' || part.kind === 'toolInvocationSerialized') && (isCreateSessionTool(part.toolId) || isCreateChatTool(part.toolId))) {
 			return false;
 		}
 
@@ -2484,6 +2532,8 @@ export class ChatListItemRenderer extends Disposable implements ITreeRenderer<Ch
 				return this.renderPlanReview(context, content, templateData);
 			} else if (content.kind === 'changesSummary') {
 				return this.renderChangesSummary(content, context, templateData);
+			} else if (content.kind === 'turnPills') {
+				return this.renderTurnPills(content, context);
 			} else if (content.kind === 'mcpServersStarting') {
 				return this.renderMcpServersInteractionRequired(content, context, templateData);
 			} else if (content.kind === 'mcpAuthenticationRequired') {
@@ -3305,6 +3355,10 @@ export class ChatListItemRenderer extends Disposable implements ITreeRenderer<Ch
 	private renderChangesSummary(content: IChatChangesSummaryPart, context: IChatContentPartRenderContext, templateData: IChatListItemTemplate): IChatContentPart {
 		const part = this.instantiationService.createInstance(ChatCheckpointFileChangesSummaryContentPart, content, context);
 		return part;
+	}
+
+	private renderTurnPills(content: IChatTurnPillsPart, context: IChatContentPartRenderContext): IChatContentPart {
+		return this.instantiationService.createInstance(ChatTurnPillsContentPart, content, context);
 	}
 
 	private renderAttachments(variables: readonly IChatRequestVariableEntry[], contentReferences: ReadonlyArray<IChatContentReference> | undefined, modelId: string | undefined, templateData: IChatListItemTemplate, resolvedModelId?: string) {

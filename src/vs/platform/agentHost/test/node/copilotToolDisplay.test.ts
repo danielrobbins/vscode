@@ -6,7 +6,7 @@
 import assert from 'assert';
 import { URI } from '../../../../base/common/uri.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../base/test/common/utils.js';
-import { getEditFilePath, getEditFilePaths, getInvocationMessage, getPastTenseMessage, getPermissionDisplay, getShellLanguage, getToolDisplayName, getToolInputString, getToolKind, getToolMarkdownContent, isEditTool, isHiddenTool, isMarkdownRenderedTool, synthesizeSkillToolCall, type ITypedPermissionRequest } from '../../node/copilot/copilotToolDisplay.js';
+import { getEditFilePath, getEditFilePaths, getInvocationMessage, getPastTenseMessage, getPermissionDisplay, getShellIntention, getShellLanguage, getToolDisplayName, getToolInputString, getToolKind, getToolMarkdownContent, isEditTool, isHiddenTool, isMarkdownRenderedTool, synthesizeSkillToolCall, type ITypedPermissionRequest } from '../../node/copilot/copilotToolDisplay.js';
 
 suite('copilotToolDisplay — friendly tool names', () => {
 
@@ -246,6 +246,38 @@ suite('getPermissionDisplay — read permission display', () => {
 			toolInput: undefined,
 			permissionKind: 'read',
 			permissionPath: '/Users/connor/Downloads/context7-copilot-debug-main.json',
+		});
+	});
+});
+
+suite('getPermissionDisplay — write permission display', () => {
+
+	ensureNoDisposablesAreLeakedInTestSuite();
+
+	test('distinguishes creating a file from editing one', () => {
+		const request = {
+			kind: 'write',
+			fileName: '/repo/project/package.json',
+		} as ITypedPermissionRequest;
+
+		assert.deepStrictEqual({
+			create: getPermissionDisplay(request, URI.file('/repo/project'), true),
+			edit: getPermissionDisplay(request, URI.file('/repo/project'), false),
+		}, {
+			create: {
+				confirmationTitle: 'Create file?',
+				invocationMessage: { markdown: 'Creating [package.json](file:///repo/project/package.json)' },
+				toolInput: '{"path":"/repo/project/package.json"}',
+				permissionKind: 'write',
+				permissionPath: '/repo/project/package.json',
+			},
+			edit: {
+				confirmationTitle: 'Write file?',
+				invocationMessage: { markdown: 'Editing [package.json](file:///repo/project/package.json)' },
+				toolInput: '{"path":"/repo/project/package.json"}',
+				permissionKind: 'write',
+				permissionPath: '/repo/project/package.json',
+			},
 		});
 	});
 });
@@ -774,5 +806,31 @@ suite('apply_patch tool display', () => {
 		// not as a JSON object — exercise the string fallback path.
 		assert.deepStrictEqual(getEditFilePaths(multiFilePatch), ['/repo/src/foo.ts', '/repo/src/bar.ts', '/repo/src/baz.ts']);
 		assert.deepStrictEqual(getEditFilePaths(singleFilePatch), ['/repo/src/foo.ts']);
+	});
+});
+
+suite('getShellIntention', () => {
+	ensureNoDisposablesAreLeakedInTestSuite();
+
+	test('reads the description argument of shell tools, and ignores non-shell tools', () => {
+		assert.deepStrictEqual({
+			bash: getShellIntention('bash', { command: 'ls', description: 'List files' }),
+			powershell: getShellIntention('powershell', { command: 'Get-ChildItem', description: 'List files' }),
+			shellNoDescription: getShellIntention('bash', { command: 'ls' }),
+			shellEmptyDescription: getShellIntention('bash', { command: 'ls', description: '' }),
+			// The `task` (subagent) tool also has a `description` argument, but it is
+			// the subagent task description, not a shell intention — must be ignored.
+			taskTool: getShellIntention('task', { description: 'Explore the codebase' }),
+			viewTool: getShellIntention('view', { path: '/repo/file.ts', description: 'why' }),
+			noArgs: getShellIntention('bash', undefined),
+		}, {
+			bash: 'List files',
+			powershell: 'List files',
+			shellNoDescription: undefined,
+			shellEmptyDescription: undefined,
+			taskTool: undefined,
+			viewTool: undefined,
+			noArgs: undefined,
+		});
 	});
 });

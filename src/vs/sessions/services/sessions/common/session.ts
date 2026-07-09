@@ -211,6 +211,16 @@ export interface ISessionFile {
  */
 export const BRANCH_CHANGES_CHANGESET_ID = 'branchChanges';
 
+/**
+ * Well-known id of the changeset that holds the diff made during the session's
+ * **last turn** only (as opposed to the cumulative session diff). Consumers that
+ * want to reflect just the most recent turn — e.g. the chat input status pills —
+ * can locate it in {@link ISession.changesets} by id.
+ *
+ * Must match the agent host provider's `ChangesetKind.Turn` value.
+ */
+export const TURN_CHANGES_CHANGESET_ID = 'turn';
+
 export interface ISessionChangeset {
 	/** Unique identifier for the changeset. */
 	readonly id: string;
@@ -372,6 +382,14 @@ export interface IChat {
 	readonly status: IObservable<SessionStatus>;
 	/** File changes produced by the chat. */
 	readonly changes: IObservable<readonly ISessionFileChange[]>;
+	/**
+	 * File changes produced by the chat's **last turn** only (as opposed to the
+	 * cumulative chat {@link changes}). Derived from the chat's live output
+	 * stream so consumers — e.g. the chat input status pills — can reflect just
+	 * what the most recent request produced. Providers that cannot determine
+	 * this omit the observable.
+	 */
+	readonly lastTurnChanges?: IObservable<readonly ISessionFileChange[]>;
 	/** Checkpoints associated with the chat. */
 	readonly checkpoints: IObservable<IChatCheckpoints | undefined>;
 	/** Currently selected model identifier. */
